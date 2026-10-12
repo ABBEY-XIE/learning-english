@@ -1,0 +1,41 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {PLAN,WEEKS,getLesson,routine} from '../src/plan.js';
+import {esc,feedbackScore,summarize,nextDay,clock,durationLabel,extension,safeQuestion} from '../src/utils.js';
+import {publicConfig,settings,validateFeedback,isUUID,AppError,sendError} from '../server/lib.js';
+import configHandler from '../api/config.js';
+import coachHandler from '../api/coach.js';
+import {Cloud} from '../src/cloud.js';
+const validEnv={SUPABASE_URL:'https://test-project.supabase.co',SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test_only_123456789',OPENAI_API_KEY:'TEST_ONLY_NOT_A_KEY',ALLOWED_EMAILS:'TEST@EXAMPLE.COM'};
+const feedback=()=>({eligible:true,task_score:5,clarity_score:4,language_score:4,evidence_limit:'仅当前回答',strengths:['说明了目标'],fixes:[{original:'I want coffee',suggested:'I would like a coffee.',reason_zh:'另一种礼貌说法'}],natural_answer:'I would like a coffee.',next_question:'Would you like milk?',next_question_zh:'需要牛奶吗？',next_hint:'说明偏好。'});
+function response(){return {code:0,headers:{},setHeader(k,v){this.headers[k]=v;},status(n){this.code=n;return this;},json(v){this.body=v;return this;}};}
+test('课程：30天、不重复、四周、每题包含英文中文提示',()=>{
+ assert.equal(PLAN.length,30);assert.equal(WEEKS.length,4);assert.deepEqual(PLAN.map(x=>x.day),Array.from({length:30},(_,i)=>i+1));
+ for(const l of PLAN){assert.ok(l.questions.length>=2);assert.ok(l.goal&&l.role);assert.ok(['生活','旅行','潜水','复盘'].includes(l.category));assert.ok(l.week>=1&&l.week<=4);for(const q of l.questions)assert.ok(q.en&&q.zh&&q.hint);}
+});
+test('课程：月底重复基线但保留陌生题',()=>{assert.equal(PLAN[0].questions[0].en,PLAN[28].questions[0].en);assert.equal(PLAN[0].questions[1].en,PLAN[28].questions[1].en);assert.notEqual(PLAN[0].questions[2]?.en,PLAN[28].questions[2].en);});
+test('课程：复盘日和难度回退',()=>{assert.deepEqual(PLAN.filter(x=>x.review).map(x=>x.day),[7,14,21,28,30]);assert.equal(getLesson('9').day,9);assert.equal(getLesson(-9).day,1);});
+test('流程：30/35/40分钟加总准确，不等于持续发言',()=>{for(const n of [30,35,40])assert.equal(routine(n).reduce((s,x)=>s+x[1],0),n);});
+test('输出：转写和导入数据HTML转义',()=>{assert.equal(esc('<script>"x" & \'y\'</script>'),'&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');assert.equal(esc(null),'');});
+test('统计：空数据不伪造成绩',()=>{assert.deepEqual(summarize([]),{count:0,seconds:0,days:0,retakes:0,assessed:0});assert.equal(feedbackScore(null),null);assert.equal(feedbackScore({eligible:false}),null);});
+test('统计：保留首答与重练的区别；删除项不参与',()=>{const r={createdAt:'2026-10-12T10:00:00Z',duration:20};const s=summarize([{...r},{...r,parentId:'x',feedback:feedback()},{...r,deleted:true,duration:90}]);assert.deepEqual(s,{count:2,seconds:40,days:1,retakes:1,assessed:1});});
+test('分数：内部换算准确，越界或非整数不给分',()=>{assert.equal(feedbackScore(feedback()),87);assert.equal(feedbackScore({...feedback(),task_score:6}),null);assert.equal(feedbackScore({...feedback(),clarity_score:3.3}),null);});
+test('时间和进度：格式及漏学顺延',()=>{assert.equal(clock(31.8),'00:31');assert.equal(durationLabel(75),'1 分 15 秒');assert.equal(nextDay({completed:[1,3]}),2);assert.equal(extension('audio/mp4;codecs=x'),'m4a');assert.equal(safeQuestion({en:'x'.repeat(900)}).en.length,600);});
+test('配置：无配置时真实关闭云端和AI',()=>{const c=publicConfig({});assert.equal(c.cloudConfigured,false);assert.equal(c.aiConfigured,false);assert.equal(c.pronunciation,false);});
+test('配置：发布输出不泄露OpenAI密钥和允许邮箱',()=>{const c=publicConfig(validEnv);assert.equal(c.cloudConfigured,true);assert.equal(c.aiConfigured,true);assert.ok(!JSON.stringify(c).includes('TEST_ONLY_NOT_A_KEY'));assert.ok(!JSON.stringify(c).includes('TEST@EXAMPLE.COM'));});
+test('配置：误填secret/service-role公钥时拒绝并且不返回它',()=>{for(const key of ['sb_secret_DO_NOT_EXPOSE_123456789','eyJ_service_role_secret']){const c=publicConfig({...validEnv,SUPABASE_PUBLISHABLE_KEY:key});assert.equal(c.cloudConfigured,false);assert.equal(c.supabaseKey,'');assert.ok(!JSON.stringify(c).includes(key));}});
+test('配置：拒绝不受支持的项目主机和缺失AI白名单',()=>{assert.equal(publicConfig({...validEnv,SUPABASE_URL:'https://attacker.example'}).cloudConfigured,false);assert.equal(publicConfig({...validEnv,ALLOWED_EMAILS:''}).aiConfigured,false);assert.deepEqual(settings(validEnv).allowlist,['test@example.com']);});
+test('评估：证据不足时清除所有分数',()=>{const f=validateFeedback({...feedback(),eligible:false},'I want coffee');assert.equal(f.task_score,null);assert.equal(f.clarity_score,null);assert.equal(f.language_score,null);});
+test('评估：错误范围与格式不保存为有效分数',()=>{assert.throws(()=>validateFeedback({...feedback(),task_score:6},'I want coffee'),AppError);assert.throws(()=>validateFeedback({...feedback(),clarity_score:'4'},'x'),AppError);assert.throws(()=>validateFeedback({},'x'),AppError);});
+test('评估：纠错必须引用原话，最多两项',()=>{const f=feedback();f.fixes.push({original:'invented quote',suggested:'abc',reason_zh:'not real'});f.fixes.push({original:'coffee',suggested:'a coffee',reason_zh:'article'});f.fixes.push({original:'want',suggested:'would like',reason_zh:'optional'});assert.equal(validateFeedback(f,'I want coffee').fixes.length,2);assert.ok(!f.fixes.some(x=>x.original==='invented quote'));});
+test('接口：配置路由只接受GET且禁止缓存',()=>{const r=response();configHandler({method:'GET'},r);assert.equal(r.code,200);assert.equal(r.headers['Cache-Control'],'no-store');const r2=response();configHandler({method:'POST'},r2);assert.equal(r2.code,405);});
+test('接口：无效JSON/UUID/操作不会开始调用AI',async()=>{for(const body of ['{',{}, {recordId:'bad',action:'transcribe'}]){const r=response();await coachHandler({method:'POST',body,headers:{}},r);assert.equal(r.code,400);}assert.equal(isUUID('11111111-1111-4111-8111-111111111111'),true);});
+test('接口：GET不接受评估；未知异常不泄漏内部信息',async()=>{const r=response();await coachHandler({method:'GET'},r);assert.equal(r.code,405);const r2=response();sendError(r2,new Error('sensitive-token'));assert.ok(!JSON.stringify(r2.body).includes('sensitive-token'));});
+test('云端：跨账号上传在网络请求前被拒绝',async()=>{const c=new Cloud();c.session={user:{id:'owner'}};await assert.rejects(()=>c.upload({scope:'other'}),/另一个/);});
+test('云端：只在音频与元数据均成功后标记云端已保存',async()=>{const c=new Cloud();c.session={user:{id:'owner'}};const r={id:'r',scope:'owner',cycleId:'c',sessionId:'s',day:1,mime:'audio/mp4',blob:new Blob(['voice']),createdAt:new Date().toISOString()};let objectDone=false;c.request=async()=>{objectDone=true;return {};};c.put=async()=>{throw new Error('metadata failed');};await assert.rejects(()=>c.upload(r),/metadata failed/);assert.equal(objectDone,true);assert.notEqual(r.sync,'cloud');});
+test('云端：已完成学习日与远端合并而不是覆盖',async()=>{const c=new Cloud();c.session={user:{id:'owner'}};c.request=async()=>[{completed_days:[1,2]}];c.put=async(table,data)=>data;const result=await c.cycle({id:'c',name:'cycle',createdAt:'now',completed:[2,3]});assert.deepEqual(result.completed_days,[1,2,3]);});
+test('云端：本机音频回放不需要联网请求',async()=>{const c=new Cloud();const b=new Blob(['voice']);assert.equal(await c.audio({blob:b}),b);});
+test('云端：失败的删除不能被报告为成功',async()=>{const c=new Cloud();c.session={user:{id:'owner'}};let n=0;c.request=async()=>{if(++n===2)throw new Error('metadata delete failed');return {};};await assert.rejects(()=>c.delete({scope:'owner',id:'r',mime:'audio/webm'}),/metadata delete failed/);assert.equal(n,2);});
+test('静态核查：SQL启用私有音频/RLS/按日限流，不代表真实数据库测试',async()=>{const sql=await readFile(new URL('../supabase/setup.sql',import.meta.url),'utf8');for(const text of ['enable row level security',"'speaking-audio','speaking-audio',false",'pg_advisory_xact_lock','request_count>=80','revoke all on function public.claim_ai_request'])assert.ok(sql.includes(text));});
+test('静态核查：构建产物不包含服务端API或secret占位符',async()=>{const index=await readFile(new URL('../dist/index.html',import.meta.url),'utf8');assert.ok(index.includes('/src/app.js'));assert.ok(!index.includes('OPENAI_API_KEY'));const cfg=JSON.parse(await readFile(new URL('../vercel.json',import.meta.url)));assert.equal(cfg.outputDirectory,'dist');assert.equal(cfg.framework,null);});
