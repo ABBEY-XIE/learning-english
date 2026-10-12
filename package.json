@@ -1,0 +1,9 @@
+{
+  "name": "roam-speaking-personal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "旅游与生活口语：分段录音、个人档案、真实AI反馈",
+  "engines": { "node": "22.x" },
+  "scripts": { "dev": "node scripts/dev.mjs", "build": "node scripts/build.mjs", "test": "node --test tests/*.test.mjs" }
+}
