@@ -7,7 +7,7 @@ import {publicConfig,settings,validateFeedback,isUUID,AppError,sendError} from '
 import configHandler from '../api/config.js';
 import coachHandler from '../api/coach.js';
 import {Cloud} from '../src/cloud.js';
-const validEnv={SUPABASE_URL:'https://test-project.supabase.co',SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test_only_123456789',OPENAI_API_KEY:'TEST_ONLY_NOT_A_KEY',ALLOWED_EMAILS:'TEST@EXAMPLE.COM'};
+const validEnv={SUPABASE_URL:'https://test-project.supabase.co',SUPABASE_PUBLISHABLE_KEY:'sb_publishable_test_only_123456789',KIMI_API_KEY:'TEST_ONLY_NOT_A_KEY',DASHSCOPE_API_KEY:'TEST_BAILIAN_NOT_A_KEY',ALLOWED_EMAILS:'TEST@EXAMPLE.COM'};
 const feedback=()=>({eligible:true,task_score:5,clarity_score:4,language_score:4,evidence_limit:'仅当前回答',strengths:['说明了目标'],fixes:[{original:'I want coffee',suggested:'I would like a coffee.',reason_zh:'另一种礼貌说法'}],natural_answer:'I would like a coffee.',next_question:'Would you like milk?',next_question_zh:'需要牛奶吗？',next_hint:'说明偏好。'});
 function response(){return {code:0,headers:{},setHeader(k,v){this.headers[k]=v;},status(n){this.code=n;return this;},json(v){this.body=v;return this;}};}
 test('课程：30天、不重复、四周、每题包含英文中文提示',()=>{
@@ -23,7 +23,7 @@ test('统计：保留首答与重练的区别；删除项不参与',()=>{const r
 test('分数：内部换算准确，越界或非整数不给分',()=>{assert.equal(feedbackScore(feedback()),87);assert.equal(feedbackScore({...feedback(),task_score:6}),null);assert.equal(feedbackScore({...feedback(),clarity_score:3.3}),null);});
 test('时间和进度：格式及漏学顺延',()=>{assert.equal(clock(31.8),'00:31');assert.equal(durationLabel(75),'1 分 15 秒');assert.equal(nextDay({completed:[1,3]}),2);assert.equal(extension('audio/mp4;codecs=x'),'m4a');assert.equal(safeQuestion({en:'x'.repeat(900)}).en.length,600);});
 test('配置：无配置时真实关闭云端和AI',()=>{const c=publicConfig({});assert.equal(c.cloudConfigured,false);assert.equal(c.aiConfigured,false);assert.equal(c.pronunciation,false);});
-test('配置：发布输出不泄露OpenAI密钥和允许邮箱',()=>{const c=publicConfig(validEnv);assert.equal(c.cloudConfigured,true);assert.equal(c.aiConfigured,true);assert.ok(!JSON.stringify(c).includes('TEST_ONLY_NOT_A_KEY'));assert.ok(!JSON.stringify(c).includes('TEST@EXAMPLE.COM'));});
+test('配置：发布输出不泄露供应商密钥和允许邮箱',()=>{const c=publicConfig(validEnv);assert.equal(c.cloudConfigured,true);assert.equal(c.aiConfigured,true);assert.ok(!JSON.stringify(c).includes('TEST_ONLY_NOT_A_KEY'));assert.ok(!JSON.stringify(c).includes('TEST@EXAMPLE.COM'));});
 test('配置：误填secret/service-role公钥时拒绝并且不返回它',()=>{for(const key of ['sb_secret_DO_NOT_EXPOSE_123456789','eyJ_service_role_secret']){const c=publicConfig({...validEnv,SUPABASE_PUBLISHABLE_KEY:key});assert.equal(c.cloudConfigured,false);assert.equal(c.supabaseKey,'');assert.ok(!JSON.stringify(c).includes(key));}});
 test('配置：拒绝不受支持的项目主机和缺失AI白名单',()=>{assert.equal(publicConfig({...validEnv,SUPABASE_URL:'https://attacker.example'}).cloudConfigured,false);assert.equal(publicConfig({...validEnv,ALLOWED_EMAILS:''}).aiConfigured,false);assert.deepEqual(settings(validEnv).allowlist,['test@example.com']);});
 test('评估：证据不足时清除所有分数',()=>{const f=validateFeedback({...feedback(),eligible:false},'I want coffee');assert.equal(f.task_score,null);assert.equal(f.clarity_score,null);assert.equal(f.language_score,null);});

@@ -131,17 +131,22 @@ const recorder=new TurnRecorder({
   if(blob?.size){S.rescue={blob,record};presentModal(`<div class="modal-header"><h2>先把这段声音保住</h2></div><div class="notice warning">本机存储没有确认成功，不能显示为“已保存”。请先下载音频，再重试本机保存。</div><p>${esc(error.message)}</p><div class="stack-buttons"><button class="btn primary" data-act="rescue-download">${icon('download')}下载这段录音</button><button class="btn ghost" data-act="rescue-retry">重试本机保存</button><button class="text-btn danger" data-act="rescue-dismiss">已经下载，关闭提示</button></div>`);}
  }
 });
-async function requireAIConsent(){
- if(await DB.metaGet('ai-consent:'+S.scope,false))return true;
- const approved=confirm('开启AI会把你选择的录音发送给OpenAI转写；你确认后的文字和少量对话前文再发送给OpenAI生成反馈。发音、停顿和整体等级不在本版评分范围内。是否同意？（只对当前设备的此账号记住）');
- if(approved)await DB.metaSet('ai-consent:'+S.scope,true);return approved;
+async function requireAIConsent(action){
+ const key='ai-consent:'+cloud.config.consentVersion+':'+action+':'+S.scope;
+ if(await DB.metaGet(key,false))return true;
+ const detail=action==='transcribe'
+  ?'把你选中的原始录音发送给阿里云百炼（北京地域）进行转写；原音仍保留在私人Supabase中。'
+  :'把你核对后的文字、当前题目和少量此前对话发送给Kimi，生成表达反馈及追问；本步骤不发送原始音频。';
+ const approved=confirm(detail+'这可能产生对应平台的API费用。只分析当前回答，不评发音、停顿或整体等级。是否同意？');
+ if(approved)await DB.metaSet(key,true);return approved;
 }
 async function ai(id,action){
  let r=await DB.get('records',id);if(!r||r.scope!==S.scope)throw new Error('找不到当前账号的这段录音。');
  if(!cloud.session||r.scope!==cloud.session.user.id){toast('请先登录，并明确导入本机试用录音。');nav('settings');return;}
- if(!cloud.config.aiConfigured)throw new Error('AI尚未配置。');
+ if(!(action==='transcribe'?cloud.config.transcribeConfigured:cloud.config.feedbackConfigured))throw new Error(action==='transcribe'?'百炼转写尚未配置，请查看连接与设置。':'Kimi反馈尚未配置，请查看连接与设置。');
+ if(S.aiBusy)throw new Error('请等待当前AI请求结束，避免重复提交。');
  if(S.cloudBusy)throw new Error('先等待云端同步完成，再进行AI评估。');
- if(!(await requireAIConsent()))return;
+ if(!(await requireAIConsent(action)))return;
  S.aiBusy=id;showDetail(id);
  try{
   if(r.sync!=='cloud')r=await syncOne(r);
